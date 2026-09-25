@@ -9,6 +9,7 @@ add_library(pere_modbus_control OBJECT
     src/actuators/Fan.cpp
     src/actuators/Valve.cpp
     src/control/FanValveTask.cpp
+        src/shared/SensorData.h
 )
 
 target_compile_features(pere_modbus_control PUBLIC cxx_std_20)
