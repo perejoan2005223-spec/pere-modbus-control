@@ -1,11 +1,13 @@
 #pragma once
 
-struct Valve
+class Valve
 {
-    void open() const;
-    void close() const;
-    unsigned int pin; // GPIO pin number
-    bool open_level;
+    public:
+        void open() const;
+        void close() const;
+        Valve(unsigned int pin, bool open_level);
+    private:
+        unsigned int pin; // GPIO pin number
+        bool open_level;
 
-    Valve(unsigned int pin, bool open_level);
 };
