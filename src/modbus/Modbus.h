@@ -21,6 +21,12 @@ public:
 private:
     PicoOsUart* uart; // UART used to send and receive the bytes
     SemaphoreHandle_t semaphore; // mutex so tasks sharing this object take turns
+    bool recovery_pending = true; // also discard any old reply when we first start
+
+    // before sending, discard old bytes and wait until the line is quiet
+    // after a failed request, also leave time for a late reply to arrive
+    bool prepareTransaction();
+    TickType_t frameGap() const;
 
     // prepare the 8 bytes we send, including the CRC
     void buildRequest(uint8_t* buffer, uint8_t device_address, uint8_t function_code,
@@ -45,4 +51,8 @@ private:
 
     // join each pair of bytes and save the registers in values
     void decodeRegisters(const uint8_t* response, uint16_t* values, uint16_t count);
+
+    // read the requested bytes using one timeout for the whole response
+    bool readBytes(uint8_t* buffer, unsigned int size,
+                   TickType_t start_time, TickType_t timeout);
 };

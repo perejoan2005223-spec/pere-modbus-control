@@ -9,9 +9,10 @@
 struct FanValveTaskParams {
     QueueHandle_t sensor_queue;
     Valve* valve;
-    float co2_threshold;
+    QueueHandle_t config_queue; // latest user settings, shared with the UI
     TickType_t max_age;
     Fan* fan;
+    QueueHandle_t status_queue = nullptr; // latest control status for other tasks
 };
 
- void FanValveTask(void* params);
+void FanValveTask(void* params);

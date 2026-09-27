@@ -17,3 +17,9 @@ Fan::Fan(Modbus* modbus)
 {
     this->modbus = modbus;
 }
+
+bool Fan::readPulses(uint16_t& pulses)
+{
+    // address of MIO12 = 1, AI1 pulse counter = 4, store the result in pulses
+    return this->modbus->readRegisters(1,0x04,4,&pulses,1);
+}

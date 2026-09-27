@@ -1,5 +1,12 @@
 #include "Modbus.h"
 #include "pico/platform/panic.h"
+#include "task.h"
+
+namespace
+{
+    constexpr TickType_t response_timeout = pdMS_TO_TICKS(500);
+    constexpr TickType_t drain_timeout = pdMS_TO_TICKS(500);
+}
 
 Modbus::Modbus(PicoOsUart* uart)
 {
@@ -17,12 +24,17 @@ Modbus::Modbus(PicoOsUart* uart)
 bool Modbus::writeSingleRegister(uint8_t device_address, uint16_t register_address,
                                  uint16_t value)
 {
-    // take the mutex before sending anything
-    if (xSemaphoreTake(this->semaphore, portMAX_DELAY) != pdTRUE)
+    // wait 500ms for another task to release the mutex
+    if (xSemaphoreTake(this->semaphore, pdMS_TO_TICKS(500)) != pdTRUE)
         return false;
 
-    // send the request and wait for the reply while we still have the mutex
-    const bool success = writeRegisterTransaction(device_address, register_address, value);
+    // do not send anything until the previous reply has been cleared
+    bool success = false;
+    if (prepareTransaction())
+    {
+        success = writeRegisterTransaction(device_address, register_address, value);
+        recovery_pending = !success;
+    }
 
     // we get here even if the helper returned false, so we always release the mutex
     xSemaphoreGive(this->semaphore);
@@ -40,17 +52,86 @@ bool Modbus::readRegisters(uint8_t device_address, uint8_t function_code,
     if (function_code != 0x03 && function_code != 0x04)
         return false;
 
-    // take the mutex for the whole request and reply
-    if (xSemaphoreTake(this->semaphore, portMAX_DELAY) != pdTRUE)
+    // wait 500ms for another task to release the mutex
+    if (xSemaphoreTake(this->semaphore, pdMS_TO_TICKS(500)) != pdTRUE)
         return false;
 
-    // the helper does the reading and tells us if it worked
-    const bool success = readRegistersTransaction(
-        device_address, function_code, register_address, values, count);
+    // keep the mutex during recovery too, so another task cannot send in the middle
+    bool success = false;
+    if (prepareTransaction())
+    {
+        success = readRegistersTransaction(
+            device_address, function_code, register_address, values, count);
+        recovery_pending = !success;
+    }
 
     // release it even if something failed inside the helper
     xSemaphoreGive(this->semaphore);
     return success;
+}
+
+TickType_t Modbus::frameGap() const
+{
+    // RTU needs at least 3.5 quiet characters between frames
+    // use 11 bits per character, which covers our 8N2 setup
+    const int baud = uart->get_baud();
+    const unsigned int gap_ms = baud > 19200 ? 2u :
+        (38500u + static_cast<unsigned int>(baud) - 1u) / static_cast<unsigned int>(baud);
+
+    // round up to ticks and add one, as we might be near the next tick already
+    return static_cast<TickType_t>(
+        (static_cast<uint64_t>(gap_ms) * configTICK_RATE_HZ + 999u) / 1000u + 1u);
+}
+
+bool Modbus::prepareTransaction()
+{
+    if (uart->get_baud() <= 0)
+    {
+        recovery_pending = true;
+        return false;
+    }
+
+    const TickType_t quiet_time = frameGap();
+
+    // after an error, discard for another reply timeout before trying again
+    // a single flush would miss bytes that arrive a bit later
+    // RTU has no request ID: devices replying even later need a longer wait here
+    const TickType_t minimum_wait = recovery_pending ? response_timeout : 0;
+    const TickType_t limit = minimum_wait + drain_timeout;
+    const TickType_t started_at = xTaskGetTickCount();
+    TickType_t last_byte_at = started_at;
+
+    // leave this set if noise prevents us from finishing the recovery
+    recovery_pending = true;
+
+    while (true)
+    {
+        TickType_t now = xTaskGetTickCount();
+        const TickType_t elapsed = now - started_at;
+
+        // do not stay here forever if the line keeps receiving garbage
+        if (elapsed >= limit)
+            return false;
+
+        const TickType_t remaining = limit - elapsed;
+        const TickType_t wait_ticks = quiet_time < remaining ? quiet_time : remaining;
+        uint8_t discarded = 0;
+
+        // read one byte at a time, so even continuous noise has a time limit
+        if (uart->read(&discarded, 1, wait_ticks * portTICK_PERIOD_MS) == 1)
+        {
+            last_byte_at = xTaskGetTickCount();
+            continue;
+        }
+
+        now = xTaskGetTickCount();
+        if ((TickType_t)(now - started_at) >= minimum_wait &&
+            (TickType_t)(now - last_byte_at) >= quiet_time)
+        {
+            recovery_pending = false;
+            return true;
+        }
+    }
 }
 
 void Modbus::buildRequest(uint8_t* buffer, uint8_t device_address, uint8_t function_code,
@@ -84,10 +165,14 @@ bool Modbus::writeRegisterTransaction(uint8_t device_address, uint16_t register_
     if (uart->write(buffer, sizeof(buffer)) != sizeof(buffer))
         return false;
 
-    // wait for the full reply, this UART uses a 100 ms timeout for each byte
+    // use one timeout for the whole reply
+    const TickType_t start_time = xTaskGetTickCount();
+
     uint8_t response[8]{};
-    if (uart->read(response, sizeof(response), 100) != sizeof(response))
+    if (!readBytes(response, sizeof(response), start_time, response_timeout))
+    {
         return false;
+    }
 
     // a normal 0x06 reply repeats what we sent, including the CRC
     for (unsigned int i = 0; i < sizeof(response); i++)
@@ -123,36 +208,40 @@ bool Modbus::readRegistersTransaction(uint8_t device_address, uint8_t function_c
 bool Modbus::receiveRegisterResponse(uint8_t* response, uint8_t device_address,
                                     uint8_t function_code, uint16_t count)
 {
-    // first read the device, function and byte count (or error code)
-    // 100 is the timeout in ms for each byte, not for the whole reply
-    if (uart->read(response, 3, 100) != 3)
-        return false;
+    // use the same timer for the header, data and CRC
+    const TickType_t start_time = xTaskGetTickCount();
 
-    // the device adds 0x80 to the function code if it reports an error
-    if (response[1] == (function_code | 0x80))
+    // first read the device, function and byte count (or error code)
+    if (!readBytes(response, 3, start_time, response_timeout))
     {
-        // try to read the last 2 CRC bytes before returning false
-        uart->read(response + 3, 2, 100);
         return false;
     }
 
-    // check that the reply is from the device and function we asked for
-    // the number of data bytes must be count * 2 because each register uses 2 bytes
-    if (response[0] != device_address || response[1] != function_code ||
-        response[2] != count * 2)
+    // the device reports an error
+    if (response[1] == (function_code | 0x80))
+    {
+        // try to read the remaining CRC bytes using the time left
+        readBytes(response + 3, 2, start_time, response_timeout);
         return false;
+    }
 
-    // we already have the header, now read the data and the 2 CRC bytes
-    // response + 3 saves them after the 3 bytes we already received
+    // check the device, function and expected number of data bytes
+    if (response[0] != device_address || response[1] != function_code || response[2] != count * 2)
+    {
+        return false;
+    }
+
+    // read the register data and CRC after the header
     const int missing_bytes = count * 2 + 2;
-    if (uart->read(response + 3, missing_bytes, 100) != missing_bytes)
+    if (!readBytes(response + 3, missing_bytes, start_time, response_timeout))
+    {
         return false;
+    }
 
-    // the CRC starts just after the header and all the register data
+    // check the CRC before accepting the reply
     const unsigned int crc_index = count * 2 + 3;
     return hasValidCRC(response, crc_index);
 }
-
 // calculate CRC to know if there's an error when the data arrives
 uint16_t Modbus::calculateCRC(const uint8_t* data, unsigned int length)
 {
@@ -198,4 +287,32 @@ void Modbus::decodeRegisters(const uint8_t* response, uint16_t* values, uint16_t
         // register data comes high byte first, then low
         values[i] = (response[3 + i * 2] << 8) | response[4 + i * 2];
     }
+}
+
+bool Modbus::readBytes(uint8_t* buffer, unsigned int size, TickType_t start_time, TickType_t timeout)
+{
+    for (unsigned int i = 0; i < size; i++)
+    {
+        // check how much time we already used
+        TickType_t elapsed = xTaskGetTickCount() - start_time;
+
+        if (elapsed >= timeout)
+        {
+            return false;
+        }
+
+        // the UART expects milliseconds, so convert the remaining ticks
+        TickType_t remaining_ticks = timeout - elapsed;
+        int remaining_ms = remaining_ticks * portTICK_PERIOD_MS;
+
+        // read one byte using only the time we have left
+        if (uart->read(buffer + i, 1, remaining_ms) != 1)
+        {
+            return false;
+        }
+    }
+
+    // also check the time after receiving the last byte
+    TickType_t elapsed = xTaskGetTickCount() - start_time;
+    return elapsed <= timeout;
 }

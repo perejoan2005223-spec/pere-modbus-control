@@ -12,6 +12,7 @@ add_library(pere_modbus_control OBJECT
         src/control/FanValveTask.cpp
         src/control/FanValveTask.h
         src/shared/SensorData.h
+        src/shared/ControlConfig.h
         src/modbus/Modbus.cpp
         src/modbus/Modbus.h
 )
