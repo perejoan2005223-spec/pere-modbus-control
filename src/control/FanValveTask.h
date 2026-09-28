@@ -1,6 +1,5 @@
 #pragma once
 
-#include "shared/SensorData.h"
 #include "FreeRTOS.h"
 #include "queue.h"
 #include "actuators/Valve.h"

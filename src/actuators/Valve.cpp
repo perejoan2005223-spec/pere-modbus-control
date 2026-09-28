@@ -1,6 +1,7 @@
 #include "Valve.h"
 #include "hardware/gpio.h"
 
+// constructor
 // Assign GPIO pin number to valve
 Valve::Valve(unsigned int pin, bool open_level)
 {

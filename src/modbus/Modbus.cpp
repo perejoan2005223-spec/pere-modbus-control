@@ -2,6 +2,7 @@
 #include "pico/platform/panic.h"
 #include "task.h"
 
+// invented timeouts
 namespace
 {
     constexpr TickType_t response_timeout = pdMS_TO_TICKS(500);
@@ -60,8 +61,7 @@ bool Modbus::readRegisters(uint8_t device_address, uint8_t function_code,
     bool success = false;
     if (prepareTransaction())
     {
-        success = readRegistersTransaction(
-            device_address, function_code, register_address, values, count);
+        success = readRegistersTransaction(device_address, function_code, register_address, values, count);
         recovery_pending = !success;
     }
 
@@ -125,8 +125,7 @@ bool Modbus::prepareTransaction()
         }
 
         now = xTaskGetTickCount();
-        if ((TickType_t)(now - started_at) >= minimum_wait &&
-            (TickType_t)(now - last_byte_at) >= quiet_time)
+        if ((TickType_t)(now - started_at) >= minimum_wait && (TickType_t)(now - last_byte_at) >= quiet_time)
         {
             recovery_pending = false;
             return true;

@@ -13,6 +13,7 @@ bool Fan::setSpeed(unsigned int speed)
     return this->modbus->writeSingleRegister(1,0,speed_percent);
 }
 
+// constructor
 Fan::Fan(Modbus* modbus)
 {
     this->modbus = modbus;
