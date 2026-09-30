@@ -6,12 +6,12 @@
 #include "actuators/Fan.h"
 
 struct FanValveTaskParams {
-    QueueHandle_t sensor_queue;
+    QueueHandle_t sensorQueue;
     Valve* valve;
-    QueueHandle_t config_queue; // latest user settings, shared with the UI
-    TickType_t max_age;
+    QueueHandle_t configQueue; // latest user settings, shared with the UI
+    TickType_t maxAge;
     Fan* fan;
-    QueueHandle_t status_queue = nullptr; // latest control status for other tasks
+    QueueHandle_t statusQueue = nullptr; // latest control status for other tasks
 };
 
 void FanValveTask(void* params);

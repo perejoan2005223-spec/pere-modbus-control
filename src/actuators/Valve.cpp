@@ -3,11 +3,11 @@
 
 // constructor
 // Assign GPIO pin number to valve
-Valve::Valve(unsigned int pin, bool open_level)
+Valve::Valve(unsigned int pin, bool openLevel)
 {
     this->pin = pin;
     gpio_init(this->pin);
-    this->open_level = open_level; // which signal opens the valve
+    this->openLevel = openLevel; // which signal opens the valve
     close();
     gpio_set_dir(this->pin, GPIO_OUT);
 
@@ -15,10 +15,10 @@ Valve::Valve(unsigned int pin, bool open_level)
 
 void Valve::open() const
 {
-    gpio_put(this->pin, this->open_level);
+    gpio_put(this->pin, this->openLevel);
 }
 
 void Valve::close() const
 {
-    gpio_put(this->pin, !this->open_level);
+    gpio_put(this->pin, !this->openLevel);
 }

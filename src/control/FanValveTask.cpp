@@ -11,29 +11,29 @@
 // values to use in the control loop
 namespace
 {
-constexpr TickType_t queue_wait = pdMS_TO_TICKS(50);
-constexpr TickType_t valve_open_time = pdMS_TO_TICKS(1000);
-constexpr TickType_t injection_wait = pdMS_TO_TICKS(30000);
-constexpr TickType_t pulse_check_interval = pdMS_TO_TICKS(1000);
-constexpr float ventilation_limit = 2000.0f;
-constexpr float maximum_co2_target = 1500.0f; // maximum setting from the specification
+constexpr TickType_t queueWait = pdMS_TO_TICKS(50);
+constexpr TickType_t valveOpenTime = pdMS_TO_TICKS(1000);
+constexpr TickType_t injectionWait = pdMS_TO_TICKS(30000);
+constexpr TickType_t pulseCheckInterval = pdMS_TO_TICKS(1000);
+constexpr float ventilationLimit = 2000.0f;
+constexpr float maximumCo2Target = 1500.0f; // maximum setting from the specification
 
 // keep the values that we need to remember between loop iterations
 struct ControlState
 {
-    bool valve_open = false;
-    bool has_injected = false;
-    TickType_t open_at = 0;
-    TickType_t closed_at = 0;
+    bool valveOpen = false;
+    bool hasInjected = false;
+    TickType_t openAt = 0;
+    TickType_t closedAt = 0;
 
     bool ventilating = false;
-    int fan_speed = -1; // we still don't know the confirmed fan speed
-    bool fan_fault = false; // no fan fault detected yet
-    bool fan_comm_fault = true; // we still don't have a successful pulse read
-    bool fan_write_fault = false; // no speed command has failed yet
+    int fanSpeed = -1; // we still don't know the confirmed fan speed
+    bool fanFault = false; // no fan fault detected yet
+    bool fanCommFault = true; // we still don't have a successful pulse read
+    bool fanWriteFault = false; // no speed command has failed yet
 
-    unsigned int zero_pulse_reads = 0;
-    TickType_t last_pulse_read = 0;
+    unsigned int zeroPulseReads = 0;
+    TickType_t lastPulseRead = 0;
 };
 
 bool readControlConfig(const FanValveTaskParams& params, ControlConfig& config);
@@ -51,57 +51,57 @@ void FanValveTask(void* params)
 {
 
     // parameters to be used
-    const auto* task_params = static_cast<FanValveTaskParams*>(params);
+    const auto* taskParams = static_cast<FanValveTaskParams*>(params);
     ControlState state;
     SensorData data{};
-    bool have_sensor_data = false;
-    ControlConfig previous_config{};
-    bool had_config = false;
+    bool haveSensorData = false;
+    ControlConfig previousConfig{};
+    bool hadConfig = false;
 
-    task_params->valve->close();
-    state.last_pulse_read = xTaskGetTickCount();
-    publishStatus(*task_params, state);
+    taskParams->valve->close();
+    state.lastPulseRead = xTaskGetTickCount();
+    publishStatus(*taskParams, state);
 
     while (true)
     {
         // receive data, but wake up regularly to check the valve timer
-        const BaseType_t received = xQueueReceive(task_params->sensor_queue, &data, queue_wait);
+        const BaseType_t received = xQueueReceive(taskParams->sensorQueue, &data, queueWait);
         const TickType_t now = xTaskGetTickCount();
 
-        checkValveTimeout(*task_params, state, now);
+        checkValveTimeout(*taskParams, state, now);
 
         if (received == pdTRUE)
         {
-            have_sensor_data = true;
+            haveSensorData = true;
         }
 
         ControlConfig config{};
-        const bool config_ok = readControlConfig(*task_params, config);
-        const bool config_changed = config_ok != had_config ||
-            (config_ok && config.co2_target != previous_config.co2_target);
+        const bool configOk = readControlConfig(*taskParams, config);
+        const bool configChanged = configOk != hadConfig ||
+            (configOk && config.co2Target != previousConfig.co2Target);
 
-        if (!config_ok)
+        if (!configOk)
         {
-            closeValve(*task_params, state);
+            closeValve(*taskParams, state);
         }
 
         // also react to a new target without waiting for another sensor message
         // while open, keep checking that the saved reading is still recent
-        if (have_sensor_data &&
-            (received == pdTRUE || config_changed || state.valve_open))
+        if (haveSensorData &&
+            (received == pdTRUE || configChanged || state.valveOpen))
         {
-            processSensorData(*task_params, state, data, now, config_ok ? &config : nullptr);
+            processSensorData(*taskParams, state, data, now, configOk ? &config : nullptr);
         }
 
-        if (config_ok)
+        if (configOk)
         {
-            previous_config = config;
+            previousConfig = config;
         }
-        had_config = config_ok;
+        hadConfig = configOk;
 
-        updateFanSpeed(*task_params, state);
-        checkFanPulses(*task_params, state);
-        publishStatus(*task_params, state);
+        updateFanSpeed(*taskParams, state);
+        checkFanPulses(*taskParams, state);
+        publishStatus(*taskParams, state);
     }
 }
 
@@ -111,14 +111,14 @@ bool readControlConfig(const FanValveTaskParams& params, ControlConfig& config)
 {
     // peek copies the whole config safely and leaves it there for the other tasks
     // do not wait here, as we still need to check the valve timer
-    if (params.config_queue == nullptr || xQueuePeek(params.config_queue, &config, 0) != pdTRUE)
+    if (params.configQueue == nullptr || xQueuePeek(params.configQueue, &config, 0) != pdTRUE)
     {
         return false;
     }
 
     // a missing or invalid setting must not allow an injection
-    return std::isfinite(config.co2_target) && config.co2_target >= 0.0f &&
-           config.co2_target <= maximum_co2_target;
+    return std::isfinite(config.co2Target) && config.co2Target >= 0.0f &&
+           config.co2Target <= maximumCo2Target;
 }
 
 void processSensorData(const FanValveTaskParams& params, ControlState& state,
@@ -127,30 +127,30 @@ void processSensorData(const FanValveTaskParams& params, ControlState& state,
     const TickType_t age = now - data.timestamp;
 
     // close if the CO2 reading failed, has a bad value or is too old
-    if (!data.CO2.valid || !std::isfinite(data.CO2.value) ||
-        data.CO2.value < 0.0f || age > params.max_age)
+    if (!data.co2.valid || !std::isfinite(data.co2.value) ||
+        data.co2.value < 0.0f || age > params.maxAge)
     {
         closeValve(params, state);
         return;
     }
 
     // between these two limits, keep the previous ventilation state
-    if (data.CO2.value > ventilation_limit)
+    if (data.co2.value > ventilationLimit)
     {
         state.ventilating = true;
     }
-    else if (config != nullptr && data.CO2.value <= config->co2_target)
+    else if (config != nullptr && data.co2.value <= config->co2Target)
     {
         state.ventilating = false;
     }
 
     // only inject if we need CO2 and no fan fault is detected
-    const bool can_inject = config != nullptr && data.CO2.value < config->co2_target &&
-                            !state.ventilating && state.fan_speed == 0 &&
-                            !state.fan_fault && !state.fan_comm_fault &&
-                            !state.fan_write_fault;
+    const bool canInject = config != nullptr && data.co2.value < config->co2Target &&
+                            !state.ventilating && state.fanSpeed == 0 &&
+                            !state.fanFault && !state.fanCommFault &&
+                            !state.fanWriteFault;
 
-    if (!can_inject)
+    if (!canInject)
     {
         closeValve(params, state);
         return;
@@ -162,52 +162,52 @@ void processSensorData(const FanValveTaskParams& params, ControlState& state,
 void updateFanSpeed(const FanValveTaskParams& params, ControlState& state)
 {
     // avoid waiting for Modbus while the valve is open
-    if (state.valve_open)
+    if (state.valveOpen)
     {
         return;
     }
 
-    const int wanted_fan_speed = state.ventilating ? 100 : 0;
+    const int wantedFanSpeed = state.ventilating ? 100 : 0;
 
     // send a command only if the speed changed or the last command failed
-    if (state.fan_speed == wanted_fan_speed && !state.fan_write_fault)
+    if (state.fanSpeed == wantedFanSpeed && !state.fanWriteFault)
     {
         return;
     }
 
-    const bool write_ok = params.fan->setSpeed(wanted_fan_speed);
-    state.fan_write_fault = !write_ok;
+    const bool writeOk = params.fan->setSpeed(wantedFanSpeed);
+    state.fanWriteFault = !writeOk;
 
-    if (write_ok)
+    if (writeOk)
     {
         // save the speed only if the device accepted the command
-        state.fan_speed = wanted_fan_speed;
+        state.fanSpeed = wantedFanSpeed;
 
         // start a new pulse check after changing the speed
-        state.zero_pulse_reads = 0;
-        state.last_pulse_read = xTaskGetTickCount();
+        state.zeroPulseReads = 0;
+        state.lastPulseRead = xTaskGetTickCount();
     }
 }
 
 void checkFanPulses(const FanValveTaskParams& params, ControlState& state)
 {
     // check about once per second, with the valve closed
-    if (state.valve_open ||
-        (TickType_t)(xTaskGetTickCount() - state.last_pulse_read) <
-            pulse_check_interval)
+    if (state.valveOpen ||
+        (TickType_t)(xTaskGetTickCount() - state.lastPulseRead) <
+            pulseCheckInterval)
     {
         return;
     }
 
     uint16_t pulses = 0;
-    const bool read_ok = params.fan->readPulses(pulses);
-    state.fan_comm_fault = !read_ok;
-    state.last_pulse_read = xTaskGetTickCount();
+    const bool readOk = params.fan->readPulses(pulses);
+    state.fanCommFault = !readOk;
+    state.lastPulseRead = xTaskGetTickCount();
 
-    if (!read_ok)
+    if (!readOk)
     {
         // communication failed, start the count again but keep the fan fault
-        state.zero_pulse_reads = 0;
+        state.zeroPulseReads = 0;
         return;
     }
 
@@ -217,32 +217,32 @@ void checkFanPulses(const FanValveTaskParams& params, ControlState& state)
 void publishStatus(const FanValveTaskParams& params, const ControlState& state)
 {
     // other tasks may not be using the status queue yet
-    if (params.status_queue == nullptr)
+    if (params.statusQueue == nullptr)
     {
         return;
     }
 
     // copy the current control state for the other tasks
     ControlStatus status{};
-    status.valve_open = state.valve_open;
+    status.valveOpen = state.valveOpen;
     status.ventilating = state.ventilating;
-    status.fan_speed = state.fan_speed;
-    status.fan_fault = state.fan_fault;
-    status.fan_comm_fault = state.fan_comm_fault;
-    status.fan_write_fault = state.fan_write_fault;
+    status.fanSpeed = state.fanSpeed;
+    status.fanFault = state.fanFault;
+    status.fanCommFault = state.fanCommFault;
+    status.fanWriteFault = state.fanWriteFault;
     // time when published
     status.timestamp = xTaskGetTickCount();
 
     // replace the previous status with the latest one
-    xQueueOverwrite(params.status_queue, &status);
+    xQueueOverwrite(params.statusQueue, &status);
 }
 
 void checkValveTimeout(const FanValveTaskParams& params, ControlState& state,
                        TickType_t now)
 {
     // close after 1 second, even if no sensor data arrives
-    if (state.valve_open &&
-        (TickType_t)(now - state.open_at) >= valve_open_time)
+    if (state.valveOpen &&
+        (TickType_t)(now - state.openAt) >= valveOpenTime)
     {
         closeValve(params, state);
     }
@@ -250,22 +250,22 @@ void checkValveTimeout(const FanValveTaskParams& params, ControlState& state,
 
 void tryOpenValve(const FanValveTaskParams& params, ControlState& state)
 {
-    if (state.valve_open)
+    if (state.valveOpen)
     {
         return;
     }
 
     // after the first injection, wait 30 seconds from when we closed the valve
-    if (state.has_injected &&
-        (TickType_t)(xTaskGetTickCount() - state.closed_at) < injection_wait)
+    if (state.hasInjected &&
+        (TickType_t)(xTaskGetTickCount() - state.closedAt) < injectionWait)
     {
         return;
     }
 
     params.valve->open();
-    state.valve_open = true;
-    state.has_injected = true;
-    state.open_at = xTaskGetTickCount();
+    state.valveOpen = true;
+    state.hasInjected = true;
+    state.openAt = xTaskGetTickCount();
 }
 
 void closeValve(const FanValveTaskParams& params, ControlState& state)
@@ -273,12 +273,12 @@ void closeValve(const FanValveTaskParams& params, ControlState& state)
     params.valve->close();
 
     // only start the waiting time if the valve was open
-    if (state.valve_open)
+    if (state.valveOpen)
     {
-        state.closed_at = xTaskGetTickCount();
+        state.closedAt = xTaskGetTickCount();
     }
 
-    state.valve_open = false;
+    state.valveOpen = false;
 }
 
 void updateFanFault(ControlState& state, uint16_t pulses)
@@ -286,25 +286,25 @@ void updateFanFault(ControlState& state, uint16_t pulses)
     if (pulses == 0)
     {
         // stop counting at 2, that is enough
-        if (state.zero_pulse_reads < 2)
+        if (state.zeroPulseReads < 2)
         {
-            state.zero_pulse_reads++;
+            state.zeroPulseReads++;
         }
     }
     else
     {
         // we received pulses, the fan is turning
-        state.zero_pulse_reads = 0;
+        state.zeroPulseReads = 0;
     }
 
     // we asked the fan to run but two reads had no pulses
-    if (state.fan_speed > 0 && state.zero_pulse_reads >= 2)
+    if (state.fanSpeed > 0 && state.zeroPulseReads >= 2)
     {
-        state.fan_fault = true;
+        state.fanFault = true;
     }
-    else if (pulses > 0 || state.fan_speed == 0)
+    else if (pulses > 0 || state.fanSpeed == 0)
     {
         // the fan is turning, or we asked it to stop
-        state.fan_fault = false;
+        state.fanFault = false;
     }
 }} // these helpers are only used in this file
