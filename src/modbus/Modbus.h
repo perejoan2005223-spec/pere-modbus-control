@@ -1,6 +1,6 @@
 #pragma once
 #include <cstdint>
-#include "drivers/PicoOsUart.h"
+#include "drivers/PicoOsUart.hpp"
 #include "FreeRTOS.h"
 #include "semphr.h"
 
